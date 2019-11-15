@@ -17,7 +17,18 @@ local AUTH_REQ_OK = "\00\00\00\00"
 
 local mt = { __index = _M }
 
+local function _to_bool(str)
+    if str == "t" then
+        return true
+    elseif str == "f" then
+        return false
+    end
+    return nil
+end
+
 local converters = {}
+-- BOOLOID
+converters[16] = _to_bool
 -- INT8OID
 converters[20] = tonumber
 -- INT2OID

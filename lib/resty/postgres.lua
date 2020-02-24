@@ -13,6 +13,11 @@ _M.VERSION = '0.2'
 
 local STATE_CONNECTED = 1
 local STATE_COMMAND_SENT = 2
+
+local TRANS_IDLE = 'I'
+local TRANS_BLOCK = 'T'
+local TRANS_ERROR = 'E'
+
 local AUTH_REQ_OK = "\00\00\00\00"
 
 local mt = { __index = _M }
@@ -211,6 +216,7 @@ function _M.connect(self, opts)
     -- use pool connection
     if reused and reused > 0 then
         self.state = STATE_CONNECTED
+	self.trans = TRANS_IDLE
         return 1
     end
     -- new connection
@@ -287,7 +293,16 @@ function _M.connect(self, opts)
         end
         -- ready for new query
         if typ == 'Z' then
+            local t = string.sub(packet, 1, 1)
+            if t ~= TRANS_IDLE then
+                if t == TRANS_BLOCK or t == TRANS_ERROR then
+                    return nil, "database connection inside transaction"
+                else
+                    return nil, "invalid transaction state"
+                end
+            end
             self.state = STATE_CONNECTED
+            self.trans = TRANS_IDLE
             return 1
         end
     end
@@ -299,9 +314,14 @@ function _M.set_keepalive(self, ...)
         return nil, "not initialized"
     end
     if self.state ~= STATE_CONNECTED then
-        return nil, "cannot be reused in the current connection state: "
+        return nil, "cannot be reused in connection state: "
                     .. (self.state or "nil")
     end
+    if self.trans ~= TRANS_IDLE then
+        return nil, "cannot be reused in transaction state: "
+                   .. (self.trans or "nil")
+    end
+    self.trans = nil
     self.state = nil
     return sock:setkeepalive(...)
 end
@@ -353,6 +373,7 @@ local function read_result(self)
     local res = {}
     local fields = {}
     local field_ok = false
+    local errmsg = nil
     local packet, typ, err
     while true do
         packet, typ, err = _recv_packet(self)
@@ -408,9 +429,7 @@ local function read_result(self)
         if typ == 'E' then
             -- error packet
             local msg = _parse_error_packet(packet)
-            err = msg.M
-            res = nil
-            break
+            errmsg = msg.M
         end
         if typ == 'C' then
             -- read complete
@@ -419,7 +438,16 @@ local function read_result(self)
             err = nil
         end
         if typ == 'Z' then
+            local t = string.sub(packet, 1, 1)
+            if t ~= TRANS_IDLE and t ~= TRANS_BLOCK and t ~= TRANS_ERROR then
+                return nil, "invalid transaction state"
+            end
+            self.trans = t
             self.state = STATE_CONNECTED
+            if errmsg then
+                res = nil
+                err = errmsg
+            end
             break
         end
     end
